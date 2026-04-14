@@ -1,0 +1,266 @@
+#version 430 core
+
+layout (local_size_x = 10, local_size_y = 10, local_size_z = 1) in;
+
+layout (rgba32f, binding = 0) uniform image2D imgOut;
+
+uniform mat4 viewMat;
+uniform mat4 viewTrans;
+uniform mat4 viewRot;
+uniform vec3 camPos;
+uniform vec3 camForward;
+
+#define PI 3.14159
+#define NUMSPHERES 5
+#define DIFFUSE 0
+#define METAL 1
+#define DIELECTRIC 2
+
+uint rng_state;
+
+struct Ray {
+    vec3 origin;
+    vec3 dir;
+};
+
+struct Material {
+    vec4 attenuation;
+    int type;
+    float fuzz;
+    float refractiveIndex;
+};
+
+struct Sphere {
+    vec3 position;
+    float radius;
+    Material material;
+};
+
+struct HitInfo {
+    vec3 position;
+    vec3 normal;
+    float t;
+    Material material;
+    bool frontFace;
+};
+
+float focalLength = 1.0;
+int resolution = 100;
+vec3 cameraEye = vec3(0.0, 0.0, 0.0);
+
+int samplesPerPixel = 100;
+int depth = 1000;
+
+Sphere spheres[NUMSPHERES];
+
+float hitSphere(Sphere s, Ray r) {
+    vec3 oc = s.position -  r.origin;
+    float a = dot(r.dir, r.dir);
+    float b = -2.0 * dot(r.dir, oc);
+    float c = dot(oc, oc) - s.radius * s.radius;
+    float discriminant = b*b - 4*a*c;
+
+    if (discriminant < 0) {
+        return -1.0;
+    } else {
+        return (-b - sqrt(discriminant)) / (2.0 * a);
+    }
+}
+
+// has a period of 2^32 - 1
+uint rand_xorshift() {
+    rng_state ^= (rng_state << 13);
+    rng_state ^= (rng_state >> 17);
+    rng_state ^= (rng_state << 5);
+    return rng_state;
+}
+
+float random() {
+    return float(rand_xorshift()) * (1.0 / pow(2, 32));
+}
+
+// return a random point in [-.5, -.5] to [.5, .5] unit square
+vec3 sampleSquare() {
+    return vec3(random() - 0.5, random() - 0.5, 0.0);
+}
+
+vec3 randomVec3() {
+    return vec3(random(), random(), random());
+}
+
+vec3 randomUnitVec3() {
+    while (true) {
+        vec3 v = randomVec3();
+        float lenS = v.x * v.x + v.y * v.y + v.z * v.z;
+        if (1e-160 < lenS && lenS <= 1)
+            return normalize(v);
+    }
+}
+
+bool Vec3NearZero(vec3 v) {
+    float s = 1E-8;
+    return (abs(v.x) < s) && (abs(v.y) < s) && (abs(v.z) < s);
+}
+
+vec3 randomOnHemisphere(vec3 normal) {
+    vec3 v = randomUnitVec3();
+    if (dot(normal, v) >= 0.0)
+        return v;
+    return -v;
+}
+
+bool rayHitAnything(Ray ray, out HitInfo hitInfo) {
+    bool hit = false;
+
+    for (int i = 0; i < NUMSPHERES; ++i) {
+        Sphere s = spheres[i];
+        float t = hitSphere(s, ray);
+        float bias = 0.0001;
+
+        if (t > bias) {
+            vec3 n = normalize(ray.origin + ray.dir * t - s.position);
+            bool frontFace = dot(ray.dir, n) < 0;
+            hitInfo = HitInfo(ray.origin + ray.dir * t, n, t, s.material, frontFace);
+            hit = true;
+        }
+    }
+
+    return hit;
+}
+
+bool scattered(Ray ray, HitInfo hit, out Ray scatteredRay) {
+    if (hit.material.type != DIFFUSE) return false;
+
+    vec3 dir = hit.normal + randomUnitVec3();
+    if (Vec3NearZero(dir))
+        dir = hit.normal;
+    scatteredRay = Ray(hit.position, dir);
+
+    return true;
+}
+
+vec3 reflectVec(vec3 vec, vec3 n) {
+    return normalize(vec - 2 * dot(vec, n) * n);
+}
+
+bool reflected(Ray ray, HitInfo hit, out Ray reflectedRay) {
+    if (hit.material.type != METAL) return false;
+
+//    vec3 reflected = normalize(ray.dir - 2 * dot(ray.dir, hit.normal) * hit.normal) + (hit.material.fuzz * randomUnitVec3());
+    vec3 reflected = reflectVec(ray.dir, hit.normal) + (hit.material.fuzz * randomUnitVec3());
+    reflectedRay = Ray(hit.position, reflected);
+
+    return dot(reflected, hit.normal) > 0;
+}
+
+// schlick's approximation for reflectance
+float reflectance(float cos, float refractiveIndex) {
+    float r0 = (1.0 - refractiveIndex) / (1.0 + refractiveIndex);
+    r0 = r0*r0;
+    return r0 + (1 - r0) * pow(1 - cos, 5);
+}
+
+bool refracted(Ray ray, HitInfo hit, out Ray refractedRay) {
+    if (hit.material.type != DIELECTRIC) return false;
+
+    hit.material.attenuation = vec4(1.0);
+
+    vec3 uv = ray.dir;
+    float etaiOvereta = hit.frontFace ? (1.0 / hit.material.refractiveIndex) : hit.material.refractiveIndex;
+    vec3 n = hit.normal;
+
+    float cosTheta = min(dot(-uv, n), 1.0);
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+
+    bool cantRefract = etaiOvereta * sinTheta > 1.0;
+    if (cantRefract || reflectance(cosTheta, etaiOvereta) > random()) {
+        refractedRay = Ray(hit.position, reflectVec(ray.dir, hit.normal));
+    } else {
+        vec3 rOutPerp = etaiOvereta * (uv + cosTheta * n);
+        vec3 rOutParl =  -sqrt(abs(1.0 - length(rOutPerp) * length(rOutPerp))) * n;
+        refractedRay = Ray(hit.position, rOutPerp + rOutParl);
+    }
+
+    return true;
+}
+
+vec4 rayColor(Ray r) {
+    vec4 color = vec4(1.0);
+    Ray ray = r;
+
+    while (true) {
+        if (depth <= 0)
+            return vec4(0.0, 0.0, 0.0, 1.0);
+
+        HitInfo hit;
+        if (rayHitAnything(ray, hit)) {
+            Ray r1;
+            if (scattered(ray, hit, r1)) ray = r1;
+            if (reflected(ray, hit, r1)) ray = r1;
+            if (refracted(ray, hit, r1)) ray = r1;
+            color *= hit.material.attenuation;
+            depth--;
+        } else {
+            float a = (normalize(ray.dir).y + 1.0) * 0.5;
+            vec4 red = vec4(181.0 / 255.0, 64.0 / 255.0, 58.0 / 255.0, 1.0);
+            vec4 blue = vec4(137.0 / 255.0, 208.0 / 255.0, 224.0 / 255.0, 1.0);
+            color *= (1.0 - a) * vec4(1.0, 1.0, 1.0, 1.0) + a * vec4(0.5, 0.7, 1.0, 1.0);
+            return color;
+        }
+    }
+}
+
+Ray getRay(uint i, uint j) {
+    vec3 offset = sampleSquare();
+
+    ivec2 dims = imageSize(imgOut);
+    float f = PI/2;
+    float x = ((float(i - offset.x) * 2 - float(dims.x)) / float(dims.x)) * (float(dims.x)/float(dims.y)) * tan(f/2.0);
+    float y = ((float(j - offset.y) * 2 - float(dims.y)) / float(dims.y)) * tan(f/2.0);
+    vec3 pixelSample = vec3(x, y, -focalLength);
+    pixelSample = (viewTrans * viewRot * vec4(pixelSample.xyz, 1.0)).xyz;
+
+    vec3 origin = cameraEye;
+    vec3 dir = pixelSample - cameraEye;
+
+    return Ray(origin, dir);
+}
+
+void main() {
+    mat4 view = viewTrans * viewRot;
+    cameraEye = vec3(view[3][0], view[3][1], view[3][2]);
+//    cameraEye = vec3(-camPos.x, -camPos.y, -camPos.z);
+    //cameraEye = -camPos;
+
+    //focalLength *= camPos.z == 0 ? 1 : -camPos.z / abs(camPos.z);
+
+    rng_state = gl_GlobalInvocationID.x + uint(pow(gl_GlobalInvocationID.y, 2.17)) + 1;
+    vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
+
+    Material left = Material(vec4(0.8, 0.8, 0.8, 1.0), METAL, 0.0, 1.5);
+    Material right = Material(vec4(1.0), DIELECTRIC, 0.0, 1.3);
+    Material rightAir = Material(vec4(1.0), DIELECTRIC, 0.0, 1.0 / right.refractiveIndex);
+    Material middle = Material(vec4(0.1, 0.2, 0.5, 1.0), DIFFUSE, 0.6, 0);
+    Material ground = Material(vec4(0.8, 0.8, 0.0, 1.0), DIFFUSE, 0.0, 0);
+
+    Sphere centre = Sphere(vec3(-.0, 0.0, -.7), .3, middle);
+    float r = 300.0;
+    Sphere groundS = Sphere(vec3(0.0, -(.30 + r), -.7), r, ground);
+    Sphere leftS = Sphere(vec3(-0.62, 0.0, -.7), .3, left);
+    Sphere rightS = Sphere(vec3(.62, 0.0, -.7), .3, right);
+    Sphere rightAirS = Sphere(rightS.position, rightS.radius - 0.05, rightAir);
+
+    spheres[0] = groundS;
+//    spheres[4] = rightAirS;
+    spheres[1] = rightS;
+    spheres[2] = leftS;
+    spheres[3] = centre;
+
+    for (int i = 0; i < samplesPerPixel; ++i) {
+        Ray ray = getRay(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y);
+
+        color += rayColor(ray);
+    }
+
+    imageStore(imgOut, ivec2(gl_GlobalInvocationID.xy), (color / samplesPerPixel));
+}
