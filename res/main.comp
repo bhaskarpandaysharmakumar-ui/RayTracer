@@ -36,6 +36,11 @@ struct Sphere {
     Material material;
 };
 
+struct Interval {
+    float min;
+    float max;
+};
+
 struct HitInfo {
     vec3 position;
     vec3 normal;
@@ -51,20 +56,37 @@ vec3 cameraEye = vec3(0.0, 0.0, 0.0);
 int samplesPerPixel = 100;
 int depth = 1000;
 
+float inf = pow(2, 64);
+
 Sphere spheres[NUMSPHERES];
 
-float hitSphere(Sphere s, Ray r) {
+bool hitSphere(Sphere s, Interval intvl, Ray r, out HitInfo hit) {
     vec3 oc = s.position -  r.origin;
     float a = dot(r.dir, r.dir);
     float b = -2.0 * dot(r.dir, oc);
     float c = dot(oc, oc) - s.radius * s.radius;
     float discriminant = b*b - 4*a*c;
 
-    if (discriminant < 0) {
-        return -1.0;
-    } else {
-        return (-b - sqrt(discriminant)) / (2.0 * a);
+    if (discriminant < 0)
+        return false;
+
+    float root = (-b - sqrt(discriminant)) / (2.0 * a);
+    if (root <= intvl.min || root >= intvl.max) {
+        root = (-b + sqrt(discriminant)) / (2.0 * a);
+
+        if (root <= intvl.min || root >= intvl.max)
+            return false;
     }
+
+    hit.t = root;
+    hit.position = r.origin + r.dir * root;
+    hit.material = s.material;
+
+    vec3 normal = normalize(hit.position - s.position);
+    hit.frontFace = dot(r.dir, normal) < 0;
+    hit.normal = hit.frontFace ? normal : -normal; // the normal is always against the ray dir ('tis just a preference of the book I'm following)
+
+    return true;
 }
 
 // has a period of 2^32 - 1
@@ -109,25 +131,6 @@ vec3 randomOnHemisphere(vec3 normal) {
     return -v;
 }
 
-bool rayHitAnything(Ray ray, out HitInfo hitInfo) {
-    bool hit = false;
-
-    for (int i = 0; i < NUMSPHERES; ++i) {
-        Sphere s = spheres[i];
-        float t = hitSphere(s, ray);
-        float bias = 0.0001;
-
-        if (t > bias) {
-            vec3 n = normalize(ray.origin + ray.dir * t - s.position);
-            bool frontFace = dot(ray.dir, n) < 0;
-            hitInfo = HitInfo(ray.origin + ray.dir * t, n, t, s.material, frontFace);
-            hit = true;
-        }
-    }
-
-    return hit;
-}
-
 bool scattered(Ray ray, HitInfo hit, out Ray scatteredRay) {
     if (hit.material.type != DIFFUSE) return false;
 
@@ -165,8 +168,8 @@ bool refracted(Ray ray, HitInfo hit, out Ray refractedRay) {
 
     hit.material.attenuation = vec4(1.0);
 
-    vec3 uv = ray.dir;
-    float etaiOvereta = hit.frontFace ? (1.0 / hit.material.refractiveIndex) : hit.material.refractiveIndex;
+    vec3 uv = normalize(ray.dir);
+    float etaiOvereta = hit.frontFace ? (1.0/hit.material.refractiveIndex) : (hit.material.refractiveIndex);
     vec3 n = hit.normal;
 
     float cosTheta = min(dot(-uv, n), 1.0);
@@ -174,7 +177,7 @@ bool refracted(Ray ray, HitInfo hit, out Ray refractedRay) {
 
     bool cantRefract = etaiOvereta * sinTheta > 1.0;
     if (cantRefract || reflectance(cosTheta, etaiOvereta) > random()) {
-        refractedRay = Ray(hit.position, reflectVec(ray.dir, hit.normal));
+        refractedRay = Ray(hit.position, reflectVec(uv, hit.normal));
     } else {
         vec3 rOutPerp = etaiOvereta * (uv + cosTheta * n);
         vec3 rOutParl =  -sqrt(abs(1.0 - length(rOutPerp) * length(rOutPerp))) * n;
@@ -182,6 +185,23 @@ bool refracted(Ray ray, HitInfo hit, out Ray refractedRay) {
     }
 
     return true;
+}
+
+bool rayHitAnything(Ray ray, out HitInfo hitInfo) {
+    bool hit = false;
+    float closestSoFar = inf;
+
+    for (int i = 0; i < NUMSPHERES; ++i) {
+        Sphere s = spheres[i];
+        float bias = 0.001;
+
+        if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
+            hit = true;
+            closestSoFar = hitInfo.t; // this fixes the rendering order issue
+        }
+    }
+
+    return hit;
 }
 
 vec4 rayColor(Ray r) {
@@ -238,20 +258,20 @@ void main() {
     vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
 
     Material left = Material(vec4(0.8, 0.8, 0.8, 1.0), METAL, 0.0, 1.5);
-    Material right = Material(vec4(1.0), DIELECTRIC, 0.0, 1.3);
+    Material right = Material(vec4(1.0), DIELECTRIC, 0.0, 1.33);
     Material rightAir = Material(vec4(1.0), DIELECTRIC, 0.0, 1.0 / right.refractiveIndex);
     Material middle = Material(vec4(0.1, 0.2, 0.5, 1.0), DIFFUSE, 0.6, 0);
     Material ground = Material(vec4(0.8, 0.8, 0.0, 1.0), DIFFUSE, 0.0, 0);
 
     Sphere centre = Sphere(vec3(-.0, 0.0, -.7), .3, middle);
     float r = 300.0;
-    Sphere groundS = Sphere(vec3(0.0, -(.30 + r), -.7), r, ground);
+    Sphere groundS = Sphere(vec3(0.0, -(.301 + r), -.7), r, ground);
     Sphere leftS = Sphere(vec3(-0.62, 0.0, -.7), .3, left);
     Sphere rightS = Sphere(vec3(.62, 0.0, -.7), .3, right);
     Sphere rightAirS = Sphere(rightS.position, rightS.radius - 0.05, rightAir);
 
     spheres[0] = groundS;
-//    spheres[4] = rightAirS;
+    spheres[4] = rightAirS;
     spheres[1] = rightS;
     spheres[2] = leftS;
     spheres[3] = centre;
