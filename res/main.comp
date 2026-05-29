@@ -4,6 +4,34 @@ layout (local_size_x = 10, local_size_y = 10, local_size_z = 1) in;
 
 layout (rgba32f, binding = 0) uniform image2D imgOut;
 
+struct Interval {
+    float min;
+    float max;
+};
+
+struct AABB {
+    Interval x, y, z;
+};
+
+struct Node {
+    AABB bbox;
+    vec3 sPos;
+    float radius;
+
+    vec3 attenuation;
+    int type;
+    float refractiveIndex;
+
+    int parent;
+    int lChild;
+    int rChild;
+};
+
+layout (std430, binding = 3) buffer Tree {
+//    mat4 data[];
+    Node data[];
+} Bvh;
+
 uniform mat4 viewMat;
 uniform mat4 viewTrans;
 uniform mat4 viewRot;
@@ -34,11 +62,6 @@ struct Sphere {
     vec3 position;
     float radius;
     Material material;
-};
-
-struct Interval {
-    float min;
-    float max;
 };
 
 struct HitInfo {
@@ -163,7 +186,7 @@ float reflectance(float cos, float refractiveIndex) {
     return r0 + (1 - r0) * pow(1 - cos, 5);
 }
 
-bool refracted(Ray ray, HitInfo hit, out Ray refractedRay) {
+bool refracted(Ray ray, inout HitInfo hit, out Ray refractedRay) {
     if (hit.material.type != DIELECTRIC) return false;
 
     hit.material.attenuation = vec4(1.0);
@@ -204,6 +227,152 @@ bool rayHitAnything(Ray ray, out HitInfo hitInfo) {
     return hit;
 }
 
+bool rayHitAABB(Ray ray, AABB boundingBox, Interval intvl) {
+    for (int axis = 0; axis < 3; ++axis) {
+        Interval ax = (axis == 0 ? boundingBox.x : (axis == 1 ? boundingBox.y : boundingBox.z));
+
+//        float t0 = (ax.min - ray.origin[axis]) * (1.0 / ray.dir[axis]);
+//        float t1 = (ax.max - ray.origin[axis]) * (1.0 / ray.dir[axis]);
+//
+//        float t3=intvl.min, t4=intvl.max;
+//
+//        if (t0 < t1) {
+//            if (t0 > t3) t3 = t0;
+//            if (t1 < t4) t4 = t1;
+//        } else {
+//            if (t1 > t3) t3 = t1;
+//            if (t0 < t4) t4 = t0;
+//        }
+//
+//        if (t4 <= t3)
+//            return false;
+
+        float a = (ax.min - ray.origin[axis]) * (1.0 / ray.dir[axis]);
+        float b = (ax.max - ray.origin[axis]) * (1.0 / ray.dir[axis]);
+
+        float t0 = min(a, b);
+        float t1 = max(a, b);
+
+        float t3 = intvl.min;
+        float t4 = intvl.max;
+
+        if (t4 <= t3)
+            return false;
+    }
+
+    return true;
+}
+
+AABB constructAABB_Node(Node node) {
+    AABB bbox;
+    bbox.x = Interval(node.bbox.x.min, node.bbox.x.max);
+    bbox.y = Interval(node.bbox.y.min, node.bbox.y.max);
+    bbox.z = Interval(node.bbox.z.min, node.bbox.z.max);
+    return bbox;
+}
+
+Sphere constructSphere_Node(Node node) {
+    Sphere s;
+    s.position = node.sPos;
+    s.radius = node.radius;
+    s.material.type = node.type;
+    s.material.fuzz = 0;
+    s.material.refractiveIndex = node.refractiveIndex;
+    s.material.attenuation = vec4(node.attenuation, 1.0);
+    return s;
+}
+
+bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
+//    float bias = 0.001f;
+//    float closestSoFar = inf;
+//    bool hit = false;
+//
+//    for (int i = 3; i < Bvh.data.length(); i+=1) {
+//        if (i == 6) continue;
+//
+//        if (!rayHitAABB(ray, constructAABB_Node(Bvh.data[i]), Interval(bias, closestSoFar))) continue;
+//
+//        Sphere s = constructSphere_Node(Bvh.data[i]);
+//
+//        if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
+//            hit = true;
+//            closestSoFar = hitInfo.t;
+//        }
+//    }
+//
+//    return hit;
+
+    float bias = 0.001f;
+
+    AABB rootAABB = constructAABB_Node(Bvh.data[0]);
+    if (!rayHitAABB(ray, rootAABB, Interval(bias, inf)))
+        return false;
+
+    bool hit = false;
+
+    float closestSoFar = inf;
+
+    bool finish = false;
+    int j = -1;
+    int i = 0;
+    while (!finish) {
+        int left, right, parent;
+
+        while (true) {
+            left = Bvh.data[i].lChild;
+
+            if (left != -1 && rayHitAABB(ray, constructAABB_Node(Bvh.data[left]), Interval(bias, inf))) {
+                i = left;
+                continue;
+            }
+
+            break;
+        }
+
+        right = Bvh.data[i].rChild;
+        if (right != -1 && rayHitAABB(ray, constructAABB_Node(Bvh.data[right]), Interval(bias, inf))) {
+            i = right;
+            continue;
+        }
+
+        // process the leaf node
+        Sphere s = constructSphere_Node(Bvh.data[i]);
+        if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
+            hit = true;
+            closestSoFar = hitInfo.t;
+        }
+
+        while (true) {
+            parent = Bvh.data[i].parent;
+            int rSibling = Bvh.data[parent].rChild;
+            int siblingRight = Bvh.data[rSibling].rChild;
+            int siblingLeft = Bvh.data[rSibling].lChild;
+
+            if (rSibling != -1) {
+                bool isLeafRight = (i == rSibling) && (siblingLeft == -1) && (siblingRight == -1);
+                if ((isLeafRight ? false : i != j)) {
+                    if (rayHitAABB(ray, constructAABB_Node(Bvh.data[rSibling]), Interval(bias, inf))) {
+                        j = parent;
+                        i = rSibling;
+                        break;
+                    }
+                }
+            }
+
+            int pParent = Bvh.data[parent].parent;
+            if (parent == 0) { // we reached root node
+                finish = true;
+                break;
+            }
+            int rightPParent = Bvh.data[pParent].rChild;
+            j = parent;
+            i = rightPParent;
+        }
+    }
+
+    return hit;
+}
+
 vec4 rayColor(Ray r) {
     vec4 color = vec4(1.0);
     Ray ray = r;
@@ -213,7 +382,8 @@ vec4 rayColor(Ray r) {
             return vec4(0.0, 0.0, 0.0, 1.0);
 
         HitInfo hit;
-        if (rayHitAnything(ray, hit)) {
+//        if (rayHitAnything(ray, hit)) {
+        if (rayHitAnything_Bvh(ray, hit)) {
             Ray r1;
             if (scattered(ray, hit, r1)) ray = r1;
             if (reflected(ray, hit, r1)) ray = r1;
@@ -257,8 +427,8 @@ void main() {
     rng_state = gl_GlobalInvocationID.x + uint(pow(gl_GlobalInvocationID.y, 2.17)) + 1;
     vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
 
-    Material left = Material(vec4(0.8, 0.8, 0.8, 1.0), METAL, 0.0, 1.5);
-    Material right = Material(vec4(1.0), DIELECTRIC, 0.0, 1.33);
+    Material left = Material(vec4(0.8, 0.8, 0.8, 1.0), METAL, 0.0, 0.0);
+    Material right = Material(vec4(0.0), DIELECTRIC, 0.0, 1.33);
     Material rightAir = Material(vec4(1.0), DIELECTRIC, 0.0, 1.0 / right.refractiveIndex);
     Material middle = Material(vec4(0.1, 0.2, 0.5, 1.0), DIFFUSE, 0.6, 0);
     Material ground = Material(vec4(0.8, 0.8, 0.0, 1.0), DIFFUSE, 0.0, 0);
