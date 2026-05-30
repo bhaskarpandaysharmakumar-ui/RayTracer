@@ -28,7 +28,6 @@ struct Node {
 };
 
 layout (std430, binding = 3) buffer Tree {
-//    mat4 data[];
     Node data[];
 } Bvh;
 
@@ -231,44 +230,22 @@ bool rayHitAABB(Ray ray, AABB boundingBox, Interval intvl) {
     for (int axis = 0; axis < 3; ++axis) {
         Interval ax = (axis == 0 ? boundingBox.x : (axis == 1 ? boundingBox.y : boundingBox.z));
 
-//        float t0 = (ax.min - ray.origin[axis]) * (1.0 / ray.dir[axis]);
-//        float t1 = (ax.max - ray.origin[axis]) * (1.0 / ray.dir[axis]);
-//
-//        float t3=intvl.min, t4=intvl.max;
-//
-//        if (t0 < t1) {
-//            if (t0 > t3) t3 = t0;
-//            if (t1 < t4) t4 = t1;
-//        } else {
-//            if (t1 > t3) t3 = t1;
-//            if (t0 < t4) t4 = t0;
-//        }
-//
-//        if (t4 <= t3)
-//            return false;
+        float t0 = (ax.min - ray.origin[axis]) * (1.0f / ray.dir[axis]);
+        float t1 = (ax.max - ray.origin[axis]) * (1.0f / ray.dir[axis]);
 
-        float a = (ax.min - ray.origin[axis]) * (1.0 / ray.dir[axis]);
-        float b = (ax.max - ray.origin[axis]) * (1.0 / ray.dir[axis]);
+        if (t0 < t1) {
+            if (t0 > intvl.min) intvl.min = t0;
+            if (t1 < intvl.max) intvl.max = t1;
+        } else {
+            if (t1 > intvl.min) intvl.min = t1;
+            if (t0 < intvl.max) intvl.max = t0;
+        }
 
-        float t0 = min(a, b);
-        float t1 = max(a, b);
-
-        float t3 = intvl.min;
-        float t4 = intvl.max;
-
-        if (t4 <= t3)
+        if (intvl.max <= intvl.min)
             return false;
     }
 
     return true;
-}
-
-AABB constructAABB_Node(Node node) {
-    AABB bbox;
-    bbox.x = Interval(node.bbox.x.min, node.bbox.x.max);
-    bbox.y = Interval(node.bbox.y.min, node.bbox.y.max);
-    bbox.z = Interval(node.bbox.z.min, node.bbox.z.max);
-    return bbox;
 }
 
 Sphere constructSphere_Node(Node node) {
@@ -287,10 +264,10 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
 //    float closestSoFar = inf;
 //    bool hit = false;
 //
-//    for (int i = 3; i < Bvh.data.length(); i+=1) {
+//    for (int i = 3; i < Bvh.data.length(); ++i) {
 //        if (i == 6) continue;
 //
-//        if (!rayHitAABB(ray, constructAABB_Node(Bvh.data[i]), Interval(bias, closestSoFar))) continue;
+//        if (!rayHitAABB(ray, Bvh.data[i].bbox, Interval(bias, closestSoFar))) continue;
 //
 //        Sphere s = constructSphere_Node(Bvh.data[i]);
 //
@@ -304,7 +281,7 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
 
     float bias = 0.001f;
 
-    AABB rootAABB = constructAABB_Node(Bvh.data[0]);
+    AABB rootAABB = Bvh.data[0].bbox;
     if (!rayHitAABB(ray, rootAABB, Interval(bias, inf)))
         return false;
 
@@ -321,7 +298,7 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
         while (true) {
             left = Bvh.data[i].lChild;
 
-            if (left != -1 && rayHitAABB(ray, constructAABB_Node(Bvh.data[left]), Interval(bias, inf))) {
+            if (left != -1 && rayHitAABB(ray, Bvh.data[left].bbox, Interval(bias, closestSoFar))) {
                 i = left;
                 continue;
             }
@@ -330,16 +307,23 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
         }
 
         right = Bvh.data[i].rChild;
-        if (right != -1 && rayHitAABB(ray, constructAABB_Node(Bvh.data[right]), Interval(bias, inf))) {
+        if (right != -1 && rayHitAABB(ray, Bvh.data[right].bbox, Interval(bias, closestSoFar))) {
             i = right;
             continue;
         }
 
+        if (i == 0) break;
+
+        left = Bvh.data[i].lChild;
+        right = Bvh.data[i].rChild;
+
         // process the leaf node
-        Sphere s = constructSphere_Node(Bvh.data[i]);
-        if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
-            hit = true;
-            closestSoFar = hitInfo.t;
+        if (right == -1 && left == -1) {
+            Sphere s = constructSphere_Node(Bvh.data[i]);
+            if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
+                hit = true;
+                closestSoFar = hitInfo.t;
+            }
         }
 
         while (true) {
@@ -351,19 +335,24 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
             if (rSibling != -1) {
                 bool isLeafRight = (i == rSibling) && (siblingLeft == -1) && (siblingRight == -1);
                 if ((isLeafRight ? false : i != j)) {
-                    if (rayHitAABB(ray, constructAABB_Node(Bvh.data[rSibling]), Interval(bias, inf))) {
-                        j = parent;
-                        i = rSibling;
-                        break;
+                    if (rayHitAABB(ray, Bvh.data[rSibling].bbox, Interval(bias, closestSoFar))) {
+                        bool hitSiblingLeft = siblingLeft != -1 ? rayHitAABB(ray, Bvh.data[siblingLeft].bbox, Interval(bias, closestSoFar)) : true;
+                        bool hitSiblingRight = siblingRight != -1 ? rayHitAABB(ray, Bvh.data[siblingRight].bbox, Interval(bias, closestSoFar)) : true;
+                        if (hitSiblingLeft || hitSiblingRight) {
+                            j = parent;
+                            i = rSibling;
+                            break;
+                        }
                     }
                 }
             }
 
-            int pParent = Bvh.data[parent].parent;
             if (parent == 0) { // we reached root node
                 finish = true;
                 break;
             }
+
+            int pParent = Bvh.data[parent].parent;
             int rightPParent = Bvh.data[pParent].rChild;
             j = parent;
             i = rightPParent;
@@ -419,6 +408,7 @@ Ray getRay(uint i, uint j) {
 void main() {
     mat4 view = viewTrans * viewRot;
     cameraEye = vec3(view[3][0], view[3][1], view[3][2]);
+//    cameraEye = vec3(view[0][3], view[1][3], view[2][3]);
 //    cameraEye = vec3(-camPos.x, -camPos.y, -camPos.z);
     //cameraEye = -camPos;
 

@@ -87,7 +87,7 @@ void FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, 9.f / 16.f * width);
 }
 
-struct AABB { // 24 bytes
+struct AABB {
     glm::vec2 x;
     alignas(8) glm::vec2 y;
     alignas(8) glm::vec2 z;
@@ -103,7 +103,7 @@ const AABB EMPTYBBOX = {{0, 0}, {0, 0}, {0, 0}};
 #define METAL 1
 #define DIELECTRIC 2
 
-struct Node { // 80 bytes
+struct Node {
     AABB bbox;
 
     alignas(16) glm::vec3 sPos; // note that only leaf nodes would have a sensible position and radius
@@ -116,13 +116,6 @@ struct Node { // 80 bytes
     int parent = -1;
     int lChild = -1;
     int rChild = -1;
-
-    Node& operator=(const Node& other) {
-        this->bbox.x = other.bbox.x;
-        this->bbox.y = other.bbox.y;
-        this->bbox.z = other.bbox.z;
-        return *this;
-    }
 };
 
 bool BoxCompareX(const Node& a, const Node& b) {
@@ -239,6 +232,7 @@ void PrintTree(std::vector<Node>& tree) {
         printf("\tInterval z: %lf, %f\n", node.bbox.z.x, node.bbox.z.y);
         // printf("\tRefractiveIndex: %lf\n", node.refractiveIndex);
         // printf("\tType: %d\n", node.type);
+        printf("\tRadius: %f\n", node.sRadius);
         printf("\tParent: %d\n", node.parent);
         printf("\tlChild: %d\n", node.lChild);
         printf("\trChild: %d\n", node.rChild);
