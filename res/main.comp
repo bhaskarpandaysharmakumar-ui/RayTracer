@@ -10,7 +10,9 @@ struct Interval {
 };
 
 struct AABB {
-    Interval x, y, z;
+    Interval x;
+    Interval y;
+    Interval z;
 };
 
 struct Node {
@@ -38,7 +40,7 @@ uniform vec3 camPos;
 uniform vec3 camForward;
 
 #define PI 3.14159
-#define NUMSPHERES 5
+#define NUMSPHERES 8
 #define DIFFUSE 0
 #define METAL 1
 #define DIELECTRIC 2
@@ -75,8 +77,8 @@ float focalLength = 1.0;
 int resolution = 100;
 vec3 cameraEye = vec3(0.0, 0.0, 0.0);
 
-int samplesPerPixel = 100;
-int depth = 1000;
+int samplesPerPixel = 20;
+int depth = 150;
 
 float inf = pow(2, 64);
 
@@ -243,7 +245,35 @@ bool rayHitAABB(Ray ray, AABB boundingBox, Interval intvl) {
 
         if (intvl.max <= intvl.min)
             return false;
+
+//        float a = (ax.min - ray.origin[axis]) * (1.0f / ray.dir[axis]);
+//        float b = (ax.max - ray.origin[axis]) * (1.0f / ray.dir[axis]);
+//
+//        float t0 = min(a, b);
+//        float t1 = max(a, b);
+//
+//        intvl.min = max(t0, intvl.min);
+//        intvl.max = min(t1, intvl.max);
+//
+//        if (intvl.max < intvl.min)
+//            return false;
     }
+
+//    float tClose=-inf, tFar=inf;
+//    for (int axis = 0; axis < 3; ++axis) {
+//        Interval ax = (axis == 0 ? boundingBox.x : (axis == 1 ? boundingBox.y : boundingBox.z));
+//
+//        float tLow = (ax.min - ray.origin[axis]) * (1.0f / ray.dir[axis]);
+//        float tHigh = (ax.max - ray.origin[axis]) * (1.0f / ray.dir[axis]);
+//
+//        float tClose_i = min(tLow, tHigh);
+//        float tFar_i = max(tLow, tHigh);
+//
+//        if (tClose_i > tClose) tClose = tClose_i;
+//        if (tFar_i < tFar) tFar = tFar_i;
+//    }
+//
+//    return tClose <= tFar;
 
     return true;
 }
@@ -259,13 +289,17 @@ Sphere constructSphere_Node(Node node) {
     return s;
 }
 
+// TODO: This only works when there are exactly <=5 spheres idk why - fix it bitch
 bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
 //    float bias = 0.001f;
 //    float closestSoFar = inf;
 //    bool hit = false;
 //
 //    for (int i = 3; i < Bvh.data.length(); ++i) {
-//        if (i == 6) continue;
+//
+//        //        if (i == 5 && !rayHitAABB(ray, Bvh.data[i].bbox, Interval(bias, closestSoFar))) continue;
+//
+//        if (i != 3 && i != 4 && i != 7 && i != 8 && i != 9 && i != 10) continue;
 //
 //        if (!rayHitAABB(ray, Bvh.data[i].bbox, Interval(bias, closestSoFar))) continue;
 //
@@ -274,6 +308,7 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
 //        if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
 //            hit = true;
 //            closestSoFar = hitInfo.t;
+////            hitInfo.material.attenuation = vec4(1.0, 0.0, 0.0, 1.0);
 //        }
 //    }
 //
@@ -281,15 +316,91 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
 
     float bias = 0.001f;
 
-    AABB rootAABB = Bvh.data[0].bbox;
-    if (!rayHitAABB(ray, rootAABB, Interval(bias, inf)))
-        return false;
+//    AABB rootAABB = Bvh.data[0].bbox;
+//    if (!rayHitAABB(ray, rootAABB, Interval(bias, inf)))
+//        return false;
 
     bool hit = false;
 
     float closestSoFar = inf;
 
-    bool finish = false;
+    int toVisit[15];
+    int head = 0;
+    toVisit[head++] = 0;
+    while (head > 0) {
+        Node curr = Bvh.data[toVisit[--head]];
+//        int i = --head;
+//        if (curr.sPos.x == -2 && curr.lChild == -1) {
+//            HitInfo h;
+//            h.material.attenuation = vec4(1.0, 0.0, 0.0, 1.0);
+//            hitInfo = h;
+//            hit = true;
+//            break;
+//        }
+        if (rayHitAABB(ray, curr.bbox, Interval(bias, closestSoFar))) { // THE PROBLEMO : the sphere and bbox association is messed up somehow -
+                                                                        //                One sphere only renders when the ray goes through another
+                                                                        //                sphere's bbox
+
+            if (curr.rChild == -1) {
+                Sphere s = constructSphere_Node(curr);
+
+
+                if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
+                    hit = true;
+                    closestSoFar = hitInfo.t;
+//                    if (!(curr.sPos.x == -2.0)) hitInfo.material.attenuation = vec4(1.0, 0.0, 0.0, 1.0);
+                }
+
+
+
+//                HitInfo h;
+//                hitInfo.material.attenuation = vec4(1.0, 0.0, 0.0, 1.0);
+//                hitInfo = h;
+//                hit = true;
+            } else {
+                toVisit[head++] = curr.rChild;
+                toVisit[head++] = curr.lChild;
+            }
+        }
+    }
+
+    return hit;
+
+
+//    int toVisit[10];
+//    int i = 0;
+//    int head = 0;
+//    while (true) {
+//        int left, right;
+//        left = Bvh.data[i].lChild;
+//        right = Bvh.data[i].rChild;
+//
+//        if (right != -1 && rayHitAABB(ray, Bvh.data[right].bbox, Interval(bias, closestSoFar))) toVisit[head++] = right;
+//
+//        if (left != -1 && rayHitAABB(ray, Bvh.data[left].bbox, Interval(bias, closestSoFar))) {
+//            i = left;
+//            continue;
+//        }
+//
+//        left = Bvh.data[i].lChild;
+//        right = Bvh.data[i].rChild;
+//        if (right == -1 && left == -1) {
+//            Sphere s = constructSphere_Node(Bvh.data[i]);
+//            if (hitSphere(s, Interval(bias, closestSoFar), ray, hitInfo)) {
+//                hit = true;
+//                closestSoFar = hitInfo.t;
+//            }
+//        }
+//
+//        if (head > 0)
+//            i = toVisit[--head];
+//        else
+//            break;
+//    }
+//
+//    return hit;
+
+    /*bool finish = false;
     int j = -1;
     int i = 0;
     while (!finish) {
@@ -359,7 +470,7 @@ bool rayHitAnything_Bvh(Ray ray, out HitInfo hitInfo) {
         }
     }
 
-    return hit;
+    return hit;*/
 }
 
 vec4 rayColor(Ray r) {
@@ -413,8 +524,8 @@ void main() {
     //cameraEye = -camPos;
 
     //focalLength *= camPos.z == 0 ? 1 : -camPos.z / abs(camPos.z);
+    rng_state = (gl_GlobalInvocationID.x + uint(pow(gl_GlobalInvocationID.y, 2.17)) + 1);
 
-    rng_state = gl_GlobalInvocationID.x + uint(pow(gl_GlobalInvocationID.y, 2.17)) + 1;
     vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
 
     Material left = Material(vec4(0.8, 0.8, 0.8, 1.0), METAL, 0.0, 0.0);
@@ -435,6 +546,18 @@ void main() {
     spheres[1] = rightS;
     spheres[2] = leftS;
     spheres[3] = centre;
+
+//    int j = 0, k = 0;
+//    for (int i = 5; i < NUMSPHERES; ++i) {
+//        float x = 2 * (k-2);
+//        k++;
+//        float y = 0;
+//        float z = (j-1.5);
+//        if (k > 5)  { j--; k = 0; }
+//        Material mat = Material(vec4(0.8, 0.8, 0.8, 1.0), METAL, 0.0, 0.0);
+//        Sphere s = Sphere(vec3(x,y,z), .3, mat);
+//        spheres[i] = s;
+//    }
 
     for (int i = 0; i < samplesPerPixel; ++i) {
         Ray ray = getRay(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y);

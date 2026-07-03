@@ -240,6 +240,21 @@ void PrintTree(std::vector<Node>& tree) {
     }
 }
 
+void PrintSizeTree(std::vector<Node>& tree) {
+    for (Node& node : tree) {
+        if (node.lChild == -1) {
+            printf("{\n");
+            printf("\tInterval x: %lf, %f\n", node.bbox.x.x, node.bbox.x.y);
+            printf("\tInterval y: %lf, %f\n", node.bbox.y.x, node.bbox.y.y);
+            printf("\tInterval z: %lf, %f\n", node.bbox.z.x, node.bbox.z.y);
+            printf("\tRadius: %f\n", node.sRadius);
+            printf("\tParent: %d\n", node.parent);
+            printf("\tPositino: %f, %f, %f\n", node.sPos.x, node.sPos.y, node.sPos.z);
+            printf("}\n");
+        }
+    }
+}
+
 int main() {
     if (!glfwInit())
         std::cout << "Failed to initialize glfw\n";
@@ -302,16 +317,41 @@ int main() {
     shader.SetMat4("proj", proj);
 
     std::vector<Node> objects, tree;
-    objects.push_back({ConstructAABB_Sphere({0.f, 0.0f, -.7f}, .3f), {0.f, 0.0f, -.7f}, .3f,
+    objects.push_back({ConstructAABB_Sphere({-0.62f, 0.0f, -.7f}, .3f), {-0.62f, 0.0f, -.7f}, .3f,
+        {0.8, 0.8, 0.8}, METAL, 0.f});
+    objects.push_back({ConstructAABB_Sphere({0.f, 0.0f, -1.2f}, .3f), {0.f, 0.0f, -1.2f}, .3f,
                                                                 {0.1, 0.2, 0.5}, DIFFUSE, 0.f});
     objects.push_back({ConstructAABB_Sphere({0.f, -300.301f, -.7f}, 300.f), {0.f, -300.301f, -.7f}, 300.f,
                                                                 {0.8, 0.8, 0.0}, DIFFUSE, 0.f});
-    objects.push_back({ConstructAABB_Sphere({-0.62f, 0.0f, -.7f}, .3f), {-0.62f, 0.0f, -.7f}, .3f,
-                                                                    {0.8, 0.8, 0.8}, METAL, 0.f});
     objects.push_back({ConstructAABB_Sphere({.62f, 0.0f, -.7f}, .3f), {.62f, 0.0f, -.7f}, .3f,
                                                                     {0, 0, 0}, DIELECTRIC, 1.33f});
     objects.push_back({ConstructAABB_Sphere({.62f, 0.0f, -.7f}, .3f - 0.05f), {.62f, 0.0f, -.7f}, .3f-0.05f,
                                                                     {0, 0, 0}, DIELECTRIC, 1.f/1.33f}); // the air sphere
+
+
+
+    int j = 0, k = 0;
+    for (int i = 5; i < 9; ++i) {
+        float x = 2 * (k-2);
+        k++;
+        float y = 0;
+        float z = (-1.5);
+        // z+=10;
+        // if (k > 5)  { j--; k = 0; }
+        // Material mat = Material(vec4(0.8, 0.8, 0.8, 1.0), METAL, 0.0, 0.0);
+        glm::vec3 pos = glm::vec3(x,y,z);
+        float r = .3;
+        // objects.push_back({ConstructAABB_Sphere(pos, r), pos, r, {0.8, 0.8, 0.8}, METAL, 0.f});
+    }
+
+    // objects.push_back({ConstructAABB_Sphere({0.f, 0.0f, -.7f}, .3f), {0.f, 0.0f, -.7f}, .3f,
+    //                                                             {0.1, 0.2, 0.5}, DIFFUSE, 0.f});
+
+    // for (Node& n : objects) {
+    //     // n.sPos.z += 10;
+    //     n.sPos.y += 0.3f;
+    //     n.bbox = ConstructAABB_Sphere(n.sPos, n.sRadius);
+    // }
 
     Node root = ConstructNodeFromList(objects, 0, objects.size());
     root.parent = -1;
@@ -322,6 +362,7 @@ int main() {
     ConstructBVH(objects, 0, objects.size(), tree);
 
     // PrintTree(tree);
+    // PrintSizeTree(tree);
 
     ComputeShader computeShader("../res/main.comp");
 
@@ -343,9 +384,9 @@ int main() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(tree.size() * sizeof(Node)), tree.data(), GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo);
-    // glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    glm::vec3 pos(0.0);
+    glm::vec3 pos(0.f, 0.f, 0.f);
     float pitch, yaw;
     float sens = 0.08;
     float speed = 1.5f;
@@ -366,7 +407,7 @@ int main() {
         glm::mat4 viewTrans = glm::mat4(1.f);
         viewRot = glm::rotate(viewRot, glm::radians(pitch), {1, 0, 0});
         viewRot = glm::rotate(viewRot, glm::radians(yaw), {0, 1, 0});
-        viewTrans = glm::translate(viewTrans, -pos);
+        viewTrans = glm::translate(viewTrans, pos);
 
         glm::mat4 view = viewTrans * viewRot;
 
@@ -376,17 +417,17 @@ int main() {
         glm::vec3 up = {view[0][1], view[1][1], view[2][1]};
 
         if (KeyboardInput::KeyPressed(GLFW_KEY_W))
-            pos += speed * forward * dt;
-        if (KeyboardInput::KeyPressed(GLFW_KEY_S))
             pos -= speed * forward * dt;
+        if (KeyboardInput::KeyPressed(GLFW_KEY_S))
+            pos += speed * forward * dt;
         if (KeyboardInput::KeyPressed(GLFW_KEY_A))
-            pos += speed * left * dt;
-        if (KeyboardInput::KeyPressed(GLFW_KEY_D))
             pos -= speed * left * dt;
+        if (KeyboardInput::KeyPressed(GLFW_KEY_D))
+            pos += speed * left * dt;
         if (KeyboardInput::KeyPressed(GLFW_KEY_E))
-            pos -= speed * glm::vec3(0, 1, 0) * dt;
-        if (KeyboardInput::KeyPressed(GLFW_KEY_Q))
             pos += speed * glm::vec3(0, 1, 0) * dt;
+        if (KeyboardInput::KeyPressed(GLFW_KEY_Q))
+            pos -= speed * glm::vec3(0, 1, 0) * dt;
 
         computeShader.Bind();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo);
